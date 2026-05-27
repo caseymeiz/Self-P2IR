@@ -156,7 +156,6 @@ if __name__ == '__main__':
     torch.cuda.synchronize()
     trainer = get_trainer(config)
     if(config.mode=='train' and config.dataset == 'real'):
-        trainer._load_pretrain("path to your own model trained on synthetic data/checkpoints/model_best_loss.pth")
         for name, param in config.model.named_parameters():
             if 'posenet' in name:
                 param.requires_grad = False

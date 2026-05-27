@@ -1,0 +1,44 @@
+[workspace]
+name = "Self-P2IR"
+version = "0.1.0"
+channels = ["pytorch3d", "pytorch", "conda-forge"]
+platforms = ["linux-64"]
+
+[tasks]
+train = "bash train.sh"
+test = "bash test.sh"
+
+[dependencies]
+python = "3.8.*"
+pip = "*"
+pytorch = { version = "1.10.1.*", channel = "pytorch" }
+torchvision = { version = "0.11.2.*", channel = "pytorch" }
+torchaudio = { version = "0.10.1.*", channel = "pytorch" }
+cudatoolkit = "11.3.*"
+cudatoolkit-dev = "11.7.*"
+numpy = ">=1.21.6,<2"
+mkl = "2021.4.*"
+scipy = "*"
+h5py = "*"
+nibabel = "*"
+pyyaml = "*"
+pillow = ">=9.3,<10"
+matplotlib = "*"
+scikit-image = "*"
+scikit-learn = "*"
+pandas = "*"
+tensorboardx = "*"
+tqdm = "*"
+easydict = "*"
+yacs = "*"
+pybind11 = "*"
+pytorch3d = "0.7.4.*"
+fvcore = "*"
+iopath = "*"
+
+[pypi-dependencies]
+geomloss = "==0.2.6"
+pykeops = "==2.2.3"
+pyquaternion = "==0.9.9"
+open3d = "==0.18.0"
+opencv-python = "==4.9.0.80"
