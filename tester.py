@@ -370,6 +370,108 @@ class _realTester(Trainer):
         print("Mean CD: {:.8f}: +- {:.8f}\n".format(aver_cd, std_cd))
         print( "time costs:", time.time() - start)
 
+    def save_prediction_overlay(self, inputs, data, idx):
+        image = inputs['ori_imgs'][0].detach().cpu().numpy().astype(np.uint8)
+        mask = data['mask'][0].detach().cpu().numpy() > 0
+
+        overlay = image.copy()
+        overlay[mask] = (0, 220, 40)
+        blended = cv2.addWeighted(image, 0.55, overlay, 0.45, 0)
+
+        contour_mask = mask.astype(np.uint8) * 255
+        contours, _ = cv2.findContours(contour_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(blended, contours, -1, (0, 255, 255), 2)
+
+        output_dir = os.path.join(self.config.snapshot_dir, 'overlays')
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, 'predicted_deformation_{:04d}.png'.format(idx))
+        cv2.imwrite(output_path, cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
+        print("Saved prediction overlay: {}".format(output_path))
+        return output_path
+
+    def save_wireframe_vtk(self, inputs, vertices, idx):
+        vertices = vertices[0].detach().cpu().numpy()
+        faces = inputs['src_faces'][0].detach().cpu().numpy()
+
+        output_dir = os.path.join(self.config.snapshot_dir, 'overlays')
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, 'predicted_deformation_{:04d}.vtk'.format(idx))
+
+        with open(output_path, 'w') as f:
+            f.write('# vtk DataFile Version 3.0\n')
+            f.write('Self-P2IR predicted deformation\n')
+            f.write('ASCII\n')
+            f.write('DATASET POLYDATA\n')
+            f.write('POINTS {} float\n'.format(vertices.shape[0]))
+            for point in vertices:
+                f.write('{:.8f} {:.8f} {:.8f}\n'.format(point[0], point[1], point[2]))
+            f.write('POLYGONS {} {}\n'.format(faces.shape[0], faces.shape[0] * 4))
+            for face in faces:
+                f.write('3 {} {} {}\n'.format(int(face[0]), int(face[1]), int(face[2])))
+
+        print("Saved prediction wireframe VTK: {}".format(output_path))
+        return output_path
+
+    def save_image_wireframe(self, inputs, vertices, idx):
+        image = inputs['ori_imgs'][0].detach().cpu().numpy().astype(np.uint8)
+        vertices = vertices[0].detach().cpu().numpy()
+        faces = inputs['src_faces'][0].detach().cpu().numpy()
+        K = inputs['cam_k'][0].detach().cpu().numpy()
+        ocv2blender = inputs['ocv2blender'][0].detach().cpu().numpy()
+
+        h, w = image.shape[:2]
+        candidates = [
+            vertices,
+            np.dot(np.diag([-1.0, -1.0, 1.0]), vertices.T).T,
+            np.dot(ocv2blender, vertices.T).T,
+            np.dot(np.diag([-1.0, 1.0, -1.0]), vertices.T).T,
+        ]
+
+        best = None
+        best_count = -1
+        for candidate in candidates:
+            z = candidate[:, 2]
+            valid = z > 1e-6
+            uv = np.zeros((candidate.shape[0], 2), dtype=np.float32)
+            projected = candidate[valid] @ K.T
+            uv[valid] = projected[:, :2] / projected[:, 2:3]
+
+            count = 0
+            for face in faces:
+                if not valid[face].all():
+                    continue
+                pts = uv[face]
+                if (pts[:, 0].max() < 0 or pts[:, 0].min() >= w or
+                        pts[:, 1].max() < 0 or pts[:, 1].min() >= h):
+                    continue
+                count += 1
+            if count > best_count:
+                best = (valid, uv)
+                best_count = count
+
+        valid, uv = best
+        wire = np.zeros_like(image)
+        for face in faces:
+            if not valid[face].all():
+                continue
+            pts = uv[face]
+            if (pts[:, 0].max() < 0 or pts[:, 0].min() >= w or
+                    pts[:, 1].max() < 0 or pts[:, 1].min() >= h):
+                continue
+            pts = np.round(pts).astype(np.int32)
+            cv2.polylines(wire, [pts], True, (255, 255, 255), 2, cv2.LINE_AA)
+
+        wire_mask = np.any(wire > 0, axis=2)
+        output = image.copy()
+        output[wire_mask] = cv2.addWeighted(image, 0.45, wire, 0.55, 0)[wire_mask]
+
+        output_dir = os.path.join(self.config.snapshot_dir, 'overlays')
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, 'predicted_deformation_image_wireframe_{:04d}.png'.format(idx))
+        cv2.imwrite(output_path, cv2.cvtColor(output, cv2.COLOR_RGB2BGR))
+        print("Saved image wireframe: {} with {} projected faces".format(output_path, best_count))
+        return output_path
+
     def test_thr(self, conf_threshold=None):
 
         num_iter = math.ceil(len(self.loader['test'].dataset) // self.loader['test'].batch_size)
@@ -396,6 +498,7 @@ class _realTester(Trainer):
             param.requires_grad = False
             if 'deformNet' in name:
                 param.requires_grad = True
+        export_idx = int(os.environ.get('SELF_P2IR_EXPORT_INDEX', '0'))
         for idx in tqdm(range(num_iter)): # loop through this epoch
 
 
@@ -422,13 +525,19 @@ class _realTester(Trainer):
             if self.timers: self.timers.toc('forward pass')
 
             with torch.no_grad():
-
                 pred_R = data['R_s2t_pred'] # s2t // w2c
                 pred_t = data['t_s2t_pred']
                 
 
                 deformed_src = data['deformed_src']
                 tsfm_deformed_src = torch.bmm(pred_R, deformed_src.permute(0,2,1)).permute(0,2,1) + pred_t.permute(0,2,1)
+
+                if idx == export_idx:
+                    self.save_prediction_overlay(inputs, data, idx)
+                    self.save_wireframe_vtk(inputs, tsfm_deformed_src, idx)
+                    self.save_image_wireframe(inputs, data['deformed_src_vis'], idx)
+                    if os.environ.get('SELF_P2IR_EXPORT_OVERLAY_ONLY') == '1':
+                        return np.nan, np.nan, np.nan, np.nan
                 
                 dist1, dist2 = CD_(data['batched_tgt_pcd'], tsfm_deformed_src)
                 dist = (dist1 + dist2) * 1000.0 # mm
